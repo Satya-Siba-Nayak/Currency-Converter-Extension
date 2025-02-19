@@ -1,10 +1,13 @@
-let exchangeRate = null;
-let enabled = true; // Conversion enabled by default
+let exchangeRate = 83; // Default exchange rate (1 USD = 83 INR approximately)
+let enabled = true;
+console.log('Content script loaded');
+console.log('Initial exchange rate:', exchangeRate);
 
 // Get initial settings
 chrome.storage.sync.get(["exchangeRate", "enabled"], (data) => {
-  exchangeRate = data.exchangeRate;
-  enabled = data.enabled;
+  console.log('Storage data:', data);
+  exchangeRate = data.exchangeRate || 83; // Use default if not set
+  enabled = data.enabled ?? true; // Use default if not set
   if (enabled) {
       convertExistingPrices();
   }
@@ -30,7 +33,13 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
 
 
 function convertExistingPrices() {
-    const targetElements = document.querySelectorAll('.price, .product-price, .cost'); // Example selectors
+    // Expanded selector list to catch more price elements
+    const targetElements = document.querySelectorAll(
+        '.price, .product-price, .cost, ' +
+        '[class*="price"], [class*="Price"], ' +
+        '[class*="cost"], [class*="Cost"], ' +
+        '[id*="price"], [id*="Price"]'
+    );
     targetElements.forEach(element => processTextNodes(element));
 }
 
@@ -105,7 +114,6 @@ targetElements.forEach(element => {
     processTextNodes(element)
     observer.observe(element, { childList: true, subtree: true });
 });
-
 
 
 
