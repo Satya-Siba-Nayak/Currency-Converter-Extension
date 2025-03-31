@@ -117,26 +117,31 @@ function processTextNodes(node) {
 
   for (const child of node.childNodes) {
     if (child.nodeType === Node.TEXT_NODE) {
-      // Check for price text in parent node's styling
-      const parentStyle = window.getComputedStyle(node);
-      const isBold = parentStyle.fontWeight >= 600;
-      
       if (usdRegex.test(child.textContent)) {
         const text = child.textContent;
-        const matches = text.match(usdRegex);
         let newText = text;
         
-        matches.forEach(match => {
-          const usdAmount = parseFloat(match.replace(/[$,]/g, ""));
-          if (!isNaN(usdAmount)) {
-            const inrAmount = usdAmount * state.exchangeRate;
-            newText = newText.replace(match, `₹${inrAmount.toFixed(2)}`);
-          }
-        });
+        // Store original text before any replacements
+        const originalText = text;
+        const matches = text.match(usdRegex);
+        
+        if (matches) {
+          matches.forEach(match => {
+            const usdAmount = parseFloat(match.replace(/[$,USD\s]/g, ""));
+            if (!isNaN(usdAmount)) {
+              const inrAmount = usdAmount * state.exchangeRate;
+              // Replace the entire price string with INR
+              newText = newText.replace(match, `₹${inrAmount.toFixed(2)}`);
+            }
+          });
 
-        const newSpan = document.createElement("span");
-        newSpan.textContent = newText;
-        child.parentNode.replaceChild(newSpan, child);
+          if (newText !== originalText) {
+            const newSpan = document.createElement("span");
+            newSpan.textContent = newText;
+            newSpan.dataset.originalText = originalText;
+            child.parentNode.replaceChild(newSpan, child);
+          }
+        }
       }
     } else if (child.nodeType === Node.ELEMENT_NODE && !child.dataset.processed) {
       processTextNodes(child); // Recursively process unprocessed child elements
