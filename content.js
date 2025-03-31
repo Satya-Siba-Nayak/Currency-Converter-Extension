@@ -48,6 +48,15 @@ const USD_PATTERNS = [
   /US\$\s*([\d,]+(?:\.\d{2})?)/  // US$XX.XX
 ];
 
+// Amazon specific price classes
+const AMAZON_PRICE_CLASSES = [
+  'a-price-whole',
+  'a-price',
+  'a-offscreen',
+  'a-price-fraction',
+  'p13n-sc-price'
+];
+
 // Initialize price conversion
 function initializePriceConversion() {
   const priceObserver = new MutationObserver(handleDOMChanges);
@@ -91,6 +100,16 @@ function processNode(node) {
       return;
     }
 
+    // Check if the node has any of the Amazon price classes
+    if (node.classList) {
+      for (const className of AMAZON_PRICE_CLASSES) {
+        if (node.classList.contains(className)) {
+          processTextNode(node.firstChild);
+          break;
+        }
+      }
+    }
+
     // Process child nodes
     node.childNodes.forEach(child => processNode(child));
     state.processedNodes.add(node);
@@ -99,24 +118,69 @@ function processNode(node) {
 
 // Process a text node for price conversion
 function processTextNode(node) {
+  // Skip if node is invalid, empty, or already processed
   if (!node || !node.textContent || state.processedNodes.has(node)) {
     return;
   }
 
-  const text = node.textContent;
-  const cacheKey = `${text}-${state.exchangeRate}`;
+  const parentElement = node.parentNode;
+  // Skip if parent element is already processed
+  if (parentElement && state.processedNodes.has(parentElement)) {
+    return;
+  }
 
-  // Check cache first
+  // Mark this node as processed immediately to prevent duplicate processing
+  state.processedNodes.add(node);
+  
+  // Check if this is an Amazon price element
+  const isAmazonPrice = parentElement && parentElement.classList && 
+    AMAZON_PRICE_CLASSES.some(className => parentElement.classList.contains(className));
+
+  // Get the text content
+  const text = node.textContent.trim();
+  if (!text) return;
+  
+  // Special handling for Amazon price components
+  if (isAmazonPrice) {
+    const numericValue = parseFloat(text.replace(/[^0-9.]/g, ''));
+    if (isNaN(numericValue)) return;
+
+    const inrAmount = (numericValue * state.exchangeRate).toFixed(2);
+    const [whole, decimal] = inrAmount.split('.');
+
+    let convertedText = text;
+    if (parentElement.classList.contains('a-price-whole')) {
+      convertedText = `₹${whole}`;
+    } else if (parentElement.classList.contains('a-price-fraction')) {
+      convertedText = decimal;
+    } else {
+      convertedText = `₹${inrAmount}`;
+    }
+
+    const span = document.createElement('span');
+    span.innerHTML = convertedText;
+    span.dataset.originalText = text;
+    span.style.cssText = window.getComputedStyle(parentElement).cssText;
+    node.parentNode.replaceChild(span, node);
+    state.processedNodes.add(span);
+    state.processedNodes.add(parentElement);
+    return;
+  }
+
+  // For non-Amazon price elements, check cache first
+  const cacheKey = `${text}-${state.exchangeRate}`;
   if (state.conversionCache.has(cacheKey)) {
     if (node.parentNode) {
       const span = document.createElement('span');
       span.innerHTML = state.conversionCache.get(cacheKey);
+      span.style.cssText = window.getComputedStyle(node.parentNode).cssText;
       node.parentNode.replaceChild(span, node);
       state.processedNodes.add(span);
     }
     return;
   }
 
+  // Process regular USD patterns
   let converted = false;
   let convertedText = text;
 
@@ -142,6 +206,7 @@ function processTextNode(node) {
       const span = document.createElement('span');
       span.innerHTML = convertedText;
       span.dataset.originalText = text;
+      span.style.cssText = window.getComputedStyle(node.parentNode).cssText;
       node.parentNode.replaceChild(span, node);
       state.processedNodes.add(span);
     }
