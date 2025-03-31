@@ -42,12 +42,16 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
 
 
 function convertExistingPrices() {
-    // Expanded selector list to catch more price elements
+    // Expanded selector list to catch more price elements, including cart items and bold text
     const targetElements = document.querySelectorAll(
         '.price, .product-price, .cost, ' +
         '[class*="price"], [class*="Price"], ' +
         '[class*="cost"], [class*="Cost"], ' +
-        '[id*="price"], [id*="Price"]'
+        '[id*="price"], [id*="Price"], ' +
+        '.cart-price, .cart-subtotal, .cart-total, ' +
+        '.subtotal, .total, .amount, ' +
+        'b:contains("$"), strong:contains("$"), ' +
+        '.bold-price, .fw-bold:contains("$")'
     );
     
     // Create a Set to track processed elements
@@ -109,10 +113,14 @@ function revertPrices(){
 function processTextNodes(node) {
   if (node.dataset.processed) return; // Skip if already processed
   
-  const usdRegex = /\$\s*([\d,.]+)/g;  // Improved regex
+  const usdRegex = /\$\s*([\d,.]+)|USD\s*([\d,.]+)/g;  // Enhanced regex to catch more price formats
 
   for (const child of node.childNodes) {
     if (child.nodeType === Node.TEXT_NODE) {
+      // Check for price text in parent node's styling
+      const parentStyle = window.getComputedStyle(node);
+      const isBold = parentStyle.fontWeight >= 600;
+      
       if (usdRegex.test(child.textContent)) {
         const text = child.textContent;
         const matches = text.match(usdRegex);
