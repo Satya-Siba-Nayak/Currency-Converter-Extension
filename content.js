@@ -106,7 +106,7 @@ function processTextNodes(node) {
         const newSpan = document.createElement("span");
         newSpan.innerHTML = child.textContent.replace(
           usdRegex,
-          `<span class="usd-to-inr">$1</span>` // Use captured group
+          `<span class="usd-to-inr">$&</span>` // Use full match to keep the $ sign
         );
         child.parentNode.replaceChild(newSpan, child);
 
@@ -147,6 +147,6 @@ targetElements.forEach(element => {
 
 
 // Call initially to convert prices on page load if enabled
-if (enabled) {
+if (state.enabled) {
   convertExistingPrices();
 }
