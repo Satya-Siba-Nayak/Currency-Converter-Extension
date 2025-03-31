@@ -1,184 +1,168 @@
-// State management
+// State management with improved caching
 let state = {
   exchangeRate: 83,
   enabled: true,
-  conversionCache: new Map()
+  conversionCache: new Map(),
+  processedNodes: new WeakSet()
 };
 
-console.log('Content script loaded');
+console.log('USD to INR Converter: Content script loaded');
 
-// Get initial settings
-chrome.storage.sync.get(["exchangeRate", "enabled"], (data) => {
+// Initialize settings from storage
+chrome.storage.sync.get(['exchangeRate', 'enabled'], (data) => {
   state.exchangeRate = data.exchangeRate || state.exchangeRate;
   state.enabled = data.enabled ?? state.enabled;
   
   if (state.enabled) {
-    convertExistingPrices();
+    initializePriceConversion();
   }
 });
 
-// Listen for changes from the popup
+// Listen for settings updates
 chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
   switch (request.action) {
-    case "updateExchangeRate":
+    case 'updateExchangeRate':
       state.exchangeRate = request.exchangeRate;
-      state.conversionCache.clear(); // Clear cache when rate changes
+      state.conversionCache.clear();
       if (state.enabled) {
-        convertExistingPrices();
+        initializePriceConversion();
       }
       break;
       
-    case "toggleEnabled":
+    case 'toggleEnabled':
       state.enabled = request.enabled;
       if (state.enabled) {
-        convertExistingPrices();
+        initializePriceConversion();
       } else {
-        revertPrices();
+        revertConversions();
       }
       break;
   }
 });
 
+// Enhanced USD price detection patterns
+const USD_PATTERNS = [
+  /\$\s*([\d,]+(?:\.\d{2})?)/,  // $XX.XX or $XX
+  /USD\s*([\d,]+(?:\.\d{2})?)/,  // USD XX.XX
+  /([\d,]+(?:\.\d{2})?)\s*USD/,  // XX.XX USD
+  /US\$\s*([\d,]+(?:\.\d{2})?)/  // US$XX.XX
+];
 
-
-function convertExistingPrices() {
-    // Expanded selector list to catch more price elements, including cart items and bold text
-    const targetElements = document.querySelectorAll(
-        '.price, .product-price, .cost, ' +
-        '[class*="price"], [class*="Price"], ' +
-        '[class*="cost"], [class*="Cost"], ' +
-        '[id*="price"], [id*="Price"], ' +
-        '.cart-price, .cart-subtotal, .cart-total, ' +
-        '.subtotal, .total, .amount, ' +
-        'b:contains("$"), strong:contains("$"), ' +
-        '.bold-price, .fw-bold:contains("$")'
-    );
-    
-    // Create a Set to track processed elements
-    const processedElements = new Set();
-    
-    targetElements.forEach(element => {
-        if (!processedElements.has(element)) {
-            processTextNodes(element);
-            processedElements.add(element);
-        }
-    });
-}
-
-
-function convertUSDToINR(element) {
-    // Skip if already converted
-    if (element.dataset.originalText) return;
-
-    const originalText = element.textContent;
-    const cacheKey = `${originalText}-${state.exchangeRate}`;
-    
-    // Check cache first
-    if (state.conversionCache.has(cacheKey)) {
-        element.textContent = state.conversionCache.get(cacheKey);
-        element.dataset.originalText = originalText;
-        return;
-    }
-
-    const usdRegex = /\$\s*([\d,.]+)/g;
-    const match = usdRegex.exec(originalText);
-    
-    if (match) {
-        const usdAmount = parseFloat(match[1].replace(/,/g, ""));
-        
-        if (!isNaN(usdAmount)) {
-            element.dataset.originalText = originalText;
-            const inrAmount = usdAmount * state.exchangeRate;
-            const newText = originalText.replace(
-                usdRegex,
-                `₹${inrAmount.toFixed(2)}`
-            );
-            
-            // Cache the conversion
-            state.conversionCache.set(cacheKey, newText);
-            element.textContent = newText;
-        }
-    }
-}
-
-function revertPrices(){
-    const convertedElements = document.querySelectorAll('[data-original-text]');
-
-    convertedElements.forEach(element => {
-        element.textContent = element.dataset.originalText;
-        delete element.dataset.originalText;
-    });
-}
-
-function processTextNodes(node) {
-  if (node.dataset.processed) return; // Skip if already processed
+// Initialize price conversion
+function initializePriceConversion() {
+  const priceObserver = new MutationObserver(handleDOMChanges);
   
-  const usdRegex = /\$\s*([\d,.]+)|USD\s*([\d,.]+)/g;  // Enhanced regex to catch more price formats
-
-  for (const child of node.childNodes) {
-    if (child.nodeType === Node.TEXT_NODE) {
-      if (usdRegex.test(child.textContent)) {
-        const text = child.textContent;
-        let newText = text;
-        
-        // Store original text before any replacements
-        const originalText = text;
-        const matches = text.match(usdRegex);
-        
-        if (matches) {
-          matches.forEach(match => {
-            const usdAmount = parseFloat(match.replace(/[$,USD\s]/g, ""));
-            if (!isNaN(usdAmount)) {
-              const inrAmount = usdAmount * state.exchangeRate;
-              // Replace the entire price string with INR
-              newText = newText.replace(match, `₹${inrAmount.toFixed(2)}`);
-            }
-          });
-
-          if (newText !== originalText) {
-            const newSpan = document.createElement("span");
-            newSpan.textContent = newText;
-            newSpan.dataset.originalText = originalText;
-            child.parentNode.replaceChild(newSpan, child);
-          }
-        }
-      }
-    } else if (child.nodeType === Node.ELEMENT_NODE && !child.dataset.processed) {
-      processTextNodes(child); // Recursively process unprocessed child elements
-    }
-  }
+  // Start observing the entire document for changes
+  priceObserver.observe(document.body, {
+    childList: true,
+    subtree: true,
+    characterData: true
+  });
   
-  node.dataset.processed = 'true'; // Mark as processed
+  // Process existing prices
+  processNode(document.body);
 }
 
-
-// Debounced Mutation Observer
-let timeoutId;
-const observer = new MutationObserver((mutations) => {
-  clearTimeout(timeoutId);
-  timeoutId = setTimeout(() => {
-    mutations.forEach((mutation) => {
-      mutation.addedNodes.forEach((node) => {
-        if (node.nodeType === Node.ELEMENT_NODE) {
-          processTextNodes(node);
+// Handle DOM changes
+function handleDOMChanges(mutations) {
+  mutations.forEach(mutation => {
+    if (mutation.type === 'characterData') {
+      processTextNode(mutation.target);
+    } else if (mutation.type === 'childList') {
+      mutation.addedNodes.forEach(node => {
+        if (node.nodeType === Node.ELEMENT_NODE || node.nodeType === Node.TEXT_NODE) {
+          processNode(node);
         }
       });
+    }
+  });
+}
+
+// Process a DOM node and its children
+function processNode(node) {
+  if (node.nodeType === Node.TEXT_NODE) {
+    processTextNode(node);
+  } else if (node.nodeType === Node.ELEMENT_NODE) {
+    // Skip already processed nodes and script/style elements
+    if (state.processedNodes.has(node) || 
+        node.tagName === 'SCRIPT' || 
+        node.tagName === 'STYLE' || 
+        node.tagName === 'NOSCRIPT') {
+      return;
+    }
+
+    // Process child nodes
+    node.childNodes.forEach(child => processNode(child));
+    state.processedNodes.add(node);
+  }
+}
+
+// Process a text node for price conversion
+function processTextNode(node) {
+  if (!node || !node.textContent || state.processedNodes.has(node)) {
+    return;
+  }
+
+  const text = node.textContent;
+  const cacheKey = `${text}-${state.exchangeRate}`;
+
+  // Check cache first
+  if (state.conversionCache.has(cacheKey)) {
+    if (node.parentNode) {
+      const span = document.createElement('span');
+      span.innerHTML = state.conversionCache.get(cacheKey);
+      node.parentNode.replaceChild(span, node);
+      state.processedNodes.add(span);
+    }
+    return;
+  }
+
+  let converted = false;
+  let convertedText = text;
+
+  // Try each USD pattern
+  for (const pattern of USD_PATTERNS) {
+    convertedText = convertedText.replace(pattern, (match, amount) => {
+      const usdAmount = parseFloat(amount.replace(/,/g, ''));
+      if (!isNaN(usdAmount)) {
+        converted = true;
+        const inrAmount = (usdAmount * state.exchangeRate).toFixed(2);
+        return `₹${inrAmount}`;
+      }
+      return match;
     });
-  }, 200); // Debounce delay
-});
+  }
 
+  if (converted) {
+    // Cache the conversion
+    state.conversionCache.set(cacheKey, convertedText);
 
-// Observe relevant elements.  You'll need to adapt these selectors:
-const targetElements = document.querySelectorAll('.price, .product-price, .cost'); // Or other appropriate selectors
+    // Replace the text node with converted content
+    if (node.parentNode) {
+      const span = document.createElement('span');
+      span.innerHTML = convertedText;
+      span.dataset.originalText = text;
+      node.parentNode.replaceChild(span, node);
+      state.processedNodes.add(span);
+    }
+  }
+}
 
-targetElements.forEach(element => {
-    processTextNodes(element)
-    observer.observe(element, { childList: true, subtree: true });
-});
+// Revert all conversions
+function revertConversions() {
+  const convertedElements = document.querySelectorAll('[data-original-text]');
+  convertedElements.forEach(element => {
+    const textNode = document.createTextNode(element.dataset.originalText);
+    element.parentNode.replaceChild(textNode, element);
+    state.processedNodes.delete(element);
+  });
+  
+  // Clear the cache and processed nodes
+  state.conversionCache.clear();
+  state.processedNodes = new WeakSet();
+}
 
-
-
-// Call initially to convert prices on page load if enabled
+// Initialize conversion if enabled
 if (state.enabled) {
-  convertExistingPrices();
+  initializePriceConversion();
 }

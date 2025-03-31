@@ -1,93 +1,76 @@
 
-// Initialize settings when extension is installed or updated
-chrome.runtime.onInstalled.addListener(() => {
-  chrome.storage.sync.set({
-    exchangeRate: 83.88,
-    enabled: true,
-    lastUpdated: new Date().getTime(),
-    lastAPICall: 0,
-    retryCount: 0
-  });
+// Background script for USD to INR Converter
+
+// State management
+let state = {
+  exchangeRate: 83.88,
+  lastUpdate: null,
+  updateInterval: 3600000 // 1 hour in milliseconds
+};
+
+// Initialize state from storage
+chrome.storage.sync.get(['exchangeRate', 'lastUpdate'], (data) => {
+  if (data.exchangeRate) {
+    state.exchangeRate = data.exchangeRate;
+  }
+  if (data.lastUpdate) {
+    state.lastUpdate = data.lastUpdate;
+  }
+  
+  // Update exchange rate if needed
+  checkAndUpdateRate();
 });
 
-// Rate limit configuration
-const MIN_API_INTERVAL = 5 * 60 * 1000; // 5 minutes
-const MAX_RETRIES = 3;
-const RETRY_DELAY = 30 * 1000; // 30 seconds
-
-// Update exchange rate with rate limiting and retry logic
-async function updateExchangeRate() {
-  try {
-    // Get current state
-    const state = await chrome.storage.sync.get([
-      'lastAPICall',
-      'retryCount',
-      'exchangeRate'
-    ]);
-
-    const now = new Date().getTime();
-    const timeSinceLastCall = now - (state.lastAPICall || 0);
-
-    // Check rate limit
-    if (timeSinceLastCall < MIN_API_INTERVAL) {
-      console.log('Rate limit: Too soon to update exchange rate');
-      return;
-    }
-
-    // Update last API call time
-    await chrome.storage.sync.set({ lastAPICall: now });
-
-    const response = await fetch('https://api.exchangerate-api.com/v4/latest/USD');
-    if (!response.ok) {
-      throw new Error(`HTTP error! status: ${response.status}`);
-    }
-
-    const data = await response.json();
-    const newRate = data.rates.INR;
-    
-    if (!newRate) {
-      throw new Error('Invalid exchange rate data');
-    }
-
-    // Reset retry count on success
-    await chrome.storage.sync.set({
-      exchangeRate: newRate,
-      lastUpdated: now,
-      retryCount: 0
-    });
-    
-    // Notify all tabs of the update
-    const tabs = await chrome.tabs.query({});
-    tabs.forEach(tab => {
-      chrome.tabs.sendMessage(tab.id, {
-        action: "updateExchangeRate",
-        exchangeRate: newRate
-      }).catch(err => console.log(`Failed to update tab ${tab.id}:`, err));
-    });
-
-  } catch (error) {
-    console.error('Failed to update exchange rate:', error);
-    
-    // Get current retry count
-    const { retryCount } = await chrome.storage.sync.get(['retryCount']);
-    
-    if (retryCount < MAX_RETRIES) {
-      // Increment retry count
-      await chrome.storage.sync.set({ retryCount: retryCount + 1 });
+// Function to check and update exchange rate
+async function checkAndUpdateRate() {
+  const now = Date.now();
+  if (!state.lastUpdate || (now - state.lastUpdate > state.updateInterval)) {
+    try {
+      const response = await fetch('https://cdn.jsdelivr.net/gh/fawazahmed0/currency-api@1/latest/currencies/usd/inr.json');
+      if (!response.ok) {
+        throw new Error(`HTTP error! status: ${response.status}`);
+      }
+      const data = await response.json();
       
-      // Schedule retry
-      setTimeout(updateExchangeRate, RETRY_DELAY);
-      console.log(`Scheduling retry ${retryCount + 1}/${MAX_RETRIES}`);
-    } else {
-      // Reset retry count after max retries
-      await chrome.storage.sync.set({ retryCount: 0 });
-      console.error('Max retries reached. Will try again on next scheduled update.');
+      if (data && data.inr) {
+        state.exchangeRate = data.inr;
+        state.lastUpdate = now;
+        
+        // Save to storage
+        chrome.storage.sync.set({
+          exchangeRate: state.exchangeRate,
+          lastUpdate: state.lastUpdate
+        });
+        
+        // Notify all tabs
+        chrome.tabs.query({}, (tabs) => {
+          tabs.forEach(tab => {
+            chrome.tabs.sendMessage(tab.id, {
+              action: 'updateExchangeRate',
+              exchangeRate: state.exchangeRate
+            }).catch(() => {});
+          });
+        });
+      }
+    } catch (error) {
+      console.error('Failed to update exchange rate:', error);
     }
   }
 }
 
-// Check and update exchange rate every 6 hours
-setInterval(updateExchangeRate, 6 * 60 * 60 * 1000);
+// Set up periodic rate checks
+setInterval(checkAndUpdateRate, 300000); // Check every 5 minutes
 
-// Initial update when browser starts
-updateExchangeRate();
+// Listen for messages from popup
+chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
+  if (request.action === 'getExchangeRate') {
+    sendResponse({
+      exchangeRate: state.exchangeRate,
+      lastUpdate: state.lastUpdate
+    });
+  } else if (request.action === 'forceUpdate') {
+    checkAndUpdateRate();
+    sendResponse({ status: 'updating' });
+  }
+  return true;
+});
