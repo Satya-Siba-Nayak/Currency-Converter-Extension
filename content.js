@@ -1,32 +1,41 @@
-let exchangeRate = 83; // Default exchange rate (1 USD = 83 INR approximately)
-let enabled = true;
+// State management
+let state = {
+  exchangeRate: 83,
+  enabled: true,
+  conversionCache: new Map()
+};
+
 console.log('Content script loaded');
-console.log('Initial exchange rate:', exchangeRate);
 
 // Get initial settings
 chrome.storage.sync.get(["exchangeRate", "enabled"], (data) => {
-  console.log('Storage data:', data);
-  exchangeRate = data.exchangeRate || 83; // Use default if not set
-  enabled = data.enabled ?? true; // Use default if not set
-  if (enabled) {
-      convertExistingPrices();
+  state.exchangeRate = data.exchangeRate || state.exchangeRate;
+  state.enabled = data.enabled ?? state.enabled;
+  
+  if (state.enabled) {
+    convertExistingPrices();
   }
 });
 
 // Listen for changes from the popup
 chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
-  if (request.action === "updateExchangeRate") {
-    exchangeRate = request.exchangeRate;
-    if (enabled) { // Only convert if enabled
+  switch (request.action) {
+    case "updateExchangeRate":
+      state.exchangeRate = request.exchangeRate;
+      state.conversionCache.clear(); // Clear cache when rate changes
+      if (state.enabled) {
         convertExistingPrices();
-    }
-  } else if (request.action === "toggleEnabled") {
-    enabled = request.enabled;
-    if (enabled) {
+      }
+      break;
+      
+    case "toggleEnabled":
+      state.enabled = request.enabled;
+      if (state.enabled) {
         convertExistingPrices();
-    } else {
-        revertPrices(); // Revert to original prices when disabled
-    }
+      } else {
+        revertPrices();
+      }
+      break;
   }
 });
 
@@ -45,17 +54,37 @@ function convertExistingPrices() {
 
 
 function convertUSDToINR(element) {
-    if (element.dataset.originalText && element.textContent.includes("₹")) return; // Check for converted price 
+    // Skip if already converted
+    if (element.dataset.originalText && element.textContent.includes("₹")) return;
+
+    const originalText = element.textContent;
+    const cacheKey = `${originalText}-${state.exchangeRate}`;
+    
+    // Check cache first
+    if (state.conversionCache.has(cacheKey)) {
+        element.textContent = state.conversionCache.get(cacheKey);
+        element.dataset.originalText = originalText;
+        return;
+    }
 
     const usdRegex = /\$\s*([\d,.]+)/g;
-    const usdAmount = parseFloat(element.textContent.replace(/[^0-9.-]+/g, ""));
-
-    if (!isNaN(usdAmount)) {
-
-        element.dataset.originalText = element.textContent; // Store original price before conversion
-        const inrAmount = usdAmount * exchangeRate;
-        element.textContent = element.textContent.replace(usdRegex, `$& (₹${inrAmount.toFixed(2)})`);
-
+    const match = usdRegex.exec(originalText);
+    
+    if (match) {
+        const usdAmount = parseFloat(match[1].replace(/,/g, ""));
+        
+        if (!isNaN(usdAmount)) {
+            element.dataset.originalText = originalText;
+            const inrAmount = usdAmount * state.exchangeRate;
+            const newText = originalText.replace(
+                usdRegex,
+                `$& (₹${inrAmount.toFixed(2)})`
+            );
+            
+            // Cache the conversion
+            state.conversionCache.set(cacheKey, newText);
+            element.textContent = newText;
+        }
     }
 }
 
