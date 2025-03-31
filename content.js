@@ -49,13 +49,22 @@ function convertExistingPrices() {
         '[class*="cost"], [class*="Cost"], ' +
         '[id*="price"], [id*="Price"]'
     );
-    targetElements.forEach(element => processTextNodes(element));
+    
+    // Create a Set to track processed elements
+    const processedElements = new Set();
+    
+    targetElements.forEach(element => {
+        if (!processedElements.has(element)) {
+            processTextNodes(element);
+            processedElements.add(element);
+        }
+    });
 }
 
 
 function convertUSDToINR(element) {
     // Skip if already converted
-    if (element.dataset.originalText && element.textContent.includes("₹")) return;
+    if (element.dataset.originalText) return;
 
     const originalText = element.textContent;
     const cacheKey = `${originalText}-${state.exchangeRate}`;
@@ -78,7 +87,7 @@ function convertUSDToINR(element) {
             const inrAmount = usdAmount * state.exchangeRate;
             const newText = originalText.replace(
                 usdRegex,
-                `$& (₹${inrAmount.toFixed(2)})`
+                `₹${inrAmount.toFixed(2)}`
             );
             
             // Cache the conversion
@@ -98,6 +107,8 @@ function revertPrices(){
 }
 
 function processTextNodes(node) {
+  if (node.dataset.processed) return; // Skip if already processed
+  
   const usdRegex = /\$\s*([\d,.]+)/g;  // Improved regex
 
   for (const child of node.childNodes) {
@@ -106,17 +117,19 @@ function processTextNodes(node) {
         const newSpan = document.createElement("span");
         newSpan.innerHTML = child.textContent.replace(
           usdRegex,
-          `<span class="usd-to-inr">$&</span>` // Use full match to keep the $ sign
+          `<span class="usd-to-inr"></span>` // Empty span to be filled with INR
         );
         child.parentNode.replaceChild(newSpan, child);
 
         const usdElements = newSpan.querySelectorAll(".usd-to-inr");
         usdElements.forEach((el) => convertUSDToINR(el));
       }
-    } else if (child.nodeType === Node.ELEMENT_NODE) {
-      processTextNodes(child); // Recursively process child elements
+    } else if (child.nodeType === Node.ELEMENT_NODE && !child.dataset.processed) {
+      processTextNodes(child); // Recursively process unprocessed child elements
     }
   }
+  
+  node.dataset.processed = 'true'; // Mark as processed
 }
 
 
