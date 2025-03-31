@@ -114,15 +114,21 @@ function processTextNodes(node) {
   for (const child of node.childNodes) {
     if (child.nodeType === Node.TEXT_NODE) {
       if (usdRegex.test(child.textContent)) {
-        const newSpan = document.createElement("span");
-        newSpan.innerHTML = child.textContent.replace(
-          usdRegex,
-          `<span class="usd-to-inr"></span>` // Empty span to be filled with INR
-        );
-        child.parentNode.replaceChild(newSpan, child);
+        const text = child.textContent;
+        const matches = text.match(usdRegex);
+        let newText = text;
+        
+        matches.forEach(match => {
+          const usdAmount = parseFloat(match.replace(/[$,]/g, ""));
+          if (!isNaN(usdAmount)) {
+            const inrAmount = usdAmount * state.exchangeRate;
+            newText = newText.replace(match, `₹${inrAmount.toFixed(2)}`);
+          }
+        });
 
-        const usdElements = newSpan.querySelectorAll(".usd-to-inr");
-        usdElements.forEach((el) => convertUSDToINR(el));
+        const newSpan = document.createElement("span");
+        newSpan.textContent = newText;
+        child.parentNode.replaceChild(newSpan, child);
       }
     } else if (child.nodeType === Node.ELEMENT_NODE && !child.dataset.processed) {
       processTextNodes(child); // Recursively process unprocessed child elements
